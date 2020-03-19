@@ -1,9 +1,11 @@
 import json
 
-from .models import Room
+from .models import Room, RoomDatePrice
 
-from django.views import View
-from django.http  import HttpResponse, JsonResponse
+from django.core.exceptions import ValidationError
+from django.db.models       import Avg, DecimalField, ExpressionWrapper, F
+from django.views           import View
+from django.http            import HttpResponse, JsonResponse
 
 class DetailView(View):
     def get(self, request, room_id):
@@ -64,3 +66,54 @@ class DetailView(View):
         }
 
         return JsonResponse({'details' : details}, status = 200)
+
+class RoomListView(View):
+    def get(self, request):
+        try :
+            check_in  = request.GET.get('CheckIn', None)
+            check_out = request.GET.get('CheckOut', None)
+
+            date_filter = (
+                RoomDatePrice
+                .objects
+                .filter(date__date__range=(check_in, check_out))
+            )
+
+            rooms = list(
+                date_filter
+                .values_list('room_id','room__name')
+                .distinct()
+            )
+
+            stay_nights = list(
+                date_filter
+                .values_list('date_id', flat = True)
+                .distinct()
+            )
+
+            room_list = [
+                {
+                    'id': room[0],
+                    'image' : list(
+                        Room.objects.filter(id = room[0])
+                        .values_list('roomimage__image'))[0],
+                    'name' : room[1],
+                    'price': (
+                        date_filter
+                        .filter(room__id = room[0])
+                        .annotate(
+                            total_price = ExpressionWrapper(
+                                F('room__price') * F('date__custom_price')
+                                ,output_field = DecimalField(10,2)
+                            )
+                        )
+                        .aggregate(
+                            Avg('total_price')
+                    )
+                )['total_price__avg'],
+                    'stay_nights' : len(stay_nights)-1
+            } for room in rooms ]
+
+            return JsonResponse({'room_list': room_list}, status = 200)
+        except ValidationError:
+            return JsonResponse({'Message':'Invalid Date'}, status = 400)
